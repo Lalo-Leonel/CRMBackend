@@ -67,6 +67,90 @@ const resolvers = {
       }
       return cliente;
     },
+    obtenerPedidos: async () => {
+      try {
+        const pedidos = await Pedido.find({});
+        return pedidos;
+      } catch (error) {
+        console.log(error);
+      }
+    },
+    obtenerPedidosVendedor: async (_, {}, ctx) => {
+      try {
+        const pedidos = await Pedido.find({ vendedor: ctx.usuario.id });
+        return pedidos;
+      } catch (error) {
+        console.log(error);
+      }
+    },
+    obtenerPedido: async (_, { id }, ctx) => {
+      const pedido = await Pedido.findById(id);
+      // Verificar si el pedido existe
+      if (!pedido) {
+        throw new Error("Cliente no encontrado");
+      }
+      // solo quien lo creo puede ver
+      if (pedido.vendedor.toString() !== ctx.usuario.id) {
+        throw new Error("No tienes las credenciales");
+      }
+      return pedido;
+    },
+    obtenerPedidosEstado: async (_, { estado }, ctx) => {
+      const pedido = await Pedido.find({
+        vendedor: ctx.usuario.id,
+        estado: estado,
+      });
+      return pedido;
+    },
+    mejoresClientes: async () => {
+      const clientes = await Pedido.aggregate([
+        { $match: { estado: "COMPLETADO" } },
+        {
+          $group: {
+            _id: "$cliente",
+            total: { $sum: "$total" },
+          },
+        },
+        {
+          $lookup: {
+            from: "clientes",
+            localField: "_id",
+            foreignField: "_id",
+            as: "cliente",
+          },
+        },
+        {
+          $sort: { total: -1 },
+        },
+      ]);
+      return clientes;
+    },
+    mejoresVendedores: async () => {
+      const vendedores = await Pedido.aggregate([
+        { $match: { estado: "COMPLETADO" } },
+        {
+          $group: {
+            _id: "$vendedor",
+            total: { $sum: "$total" },
+          },
+        },
+        {
+          $lookup: {
+            from: "usuarios",
+            localField: "_id",
+            foreignField: "_id",
+            as: "vendedor",
+          },
+        },
+        {
+          $limit: 3,
+        },
+        {
+          $sort: { total: -1 },
+        },
+      ]);
+      return vendedores;
+    },
   },
   Mutation: {
     nuevoUsuario: async (_, { input }) => {
@@ -224,6 +308,52 @@ const resolvers = {
       // Guardar en la base de datos
       const resultado = await nuevoPedido.save(); // guardarlo
       return resultado;
+    },
+    actualizarPedido: async (_, { id, input }, ctx) => {
+      const { cliente } = input;
+      let pedido = await Pedido.findById(id);
+      //si el pedido existe
+      if (!pedido) {
+        throw new Error("Pedido no existe");
+      }
+      // si el cliente existe
+      const existeCliente = await Cliente.findById(cliente);
+      if (!existeCliente) {
+        throw new Error("Cliente no existe");
+      }
+      // si el cliente y el pedido pertenece al vendedor
+      if (pedido.vendedor.toString() !== ctx.usuario.id) {
+        throw new Error("No tienes las credenciales");
+      }
+      // revisar el stock
+      for await (const articulo of pedido) {
+        const { id } = articulo;
+        const producto = await Producto.findById(id);
+        if (articulo.cantidad > producto.existencia) {
+          throw new Error(
+            `El Articulo: ${producto.nombre} excede la cantidad disponible`
+          );
+        } else {
+          // restar la cantidad a lo disponible
+          producto.existencia = producto.existencia - articulo.cantidad;
+          await producto.save();
+        }
+      }
+      pedido = await Pedido.findOneAndUpdate({ _id: id }, input, {
+        new: true,
+      });
+      return pedido;
+    },
+    eliminarPedido: async (_, { id }, ctx) => {
+      const pedido = await Pedido.findById(id);
+      if (!pedido) {
+        throw new Error("Pedido no encontrado");
+      }
+      if (pedido.vendedor.toString() !== ctx.usuario.id) {
+        throw new Error("No tienes las credenciales");
+      }
+      await Pedido.findOneAndDelete({ _id: id });
+      return "Pedido Eliminado";
     },
   },
 };
